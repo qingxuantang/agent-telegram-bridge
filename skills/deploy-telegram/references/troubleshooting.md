@@ -250,7 +250,66 @@ This is the **long-session drift** failure (see [`post-deploy-hardening.md`](./p
 2. Restart the daemon — fresh session has clean attention to CLAUDE.md.
 3. To keep the in-flight task across the restart, append a short handoff to the daemon's `CLAUDE.md` first. The transcript JSONL under `~/.claude/projects/<cwd-slug>/` survives the restart; a frozen session can't summarize itself, so do the handoff from outside (see §7).
 4. Don't try to "wake it up" with another Telegram message; the drift is locked in until restart.
-5. Long-term: schedule a nightly restart via cron / `launchd` calendar interval / Task Scheduler trigger.
+5. Long-term: install in-process session rotation (see [`session-rotation.md`](./session-rotation.md)) instead of a nightly restart — rotation archives a summary and `/clear`s inside the live process.
+
+---
+
+## Symptom: subscription access disabled after a restart (`oauth_org_not_allowed`)
+
+The daemon was working, then after a restart (scheduled or manual) the
+pane shows:
+
+```text
+Your organization has disabled Claude subscription access for Claude Code
+· Use an Anthropic API key instead, or ask your admin to enable access
+```
+
+and/or:
+
+```text
+⚠ Remote managed settings failed to load (access denied (403)) · no remote
+  policy applied · /status for details
+```
+
+`/status` confirms `Managed settings (remote): fetch failed — no policy
+applied (access denied (403))` and `Organization policy: Couldn't load`.
+Telegram goes dark — messages are dropped, not queued. This is a
+**process-startup** failure: the fresh process re-fetched the remote
+organization policy and was refused. Re-login (`/logout` + browser
+OAuth) fixes the running process, but the next restart breaks it again.
+
+### Immediate recovery
+
+1. `/logout` in the daemon's pane, then re-login via browser OAuth.
+   Confirm `Logged in as <account>` and that a test message is answered.
+2. Do **not** restart the daemon again to "confirm the fix" — a restart
+   is exactly what re-triggers the failure.
+
+### Durable mitigation
+
+Install in-process session rotation (see
+[`session-rotation.md`](./session-rotation.md)) and disable the nightly
+restart timer: rotation bounds the session without starting a new
+process, so no fresh policy fetch happens. This turns "breaks every
+night" into "breaks only when the process dies" — a mitigation, not a
+cure.
+
+### Durable fixes (escape hatches)
+
+- Ask Anthropic Support to re-enable subscription access for the
+  organization server-side. There is no self-serve toggle: personal Pro
+  settings have no Organization/Admin section, and the Console
+  organization exposes no subscription-access switch for Claude Code.
+- Switch the daemon to API-key authentication instead of the
+  subscription (OAuth) login.
+
+### What does NOT help
+
+- Re-logging in repeatedly (each fix lasts only until the next restart).
+- Reinstalling the plugin or rebuilding the daemon (the policy fetch
+  happens at process startup regardless).
+
+---
 
 ---
 

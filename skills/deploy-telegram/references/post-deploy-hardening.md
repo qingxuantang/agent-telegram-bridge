@@ -172,7 +172,20 @@ But the **primary defense remains the CLAUDE.md rule** + post-compact mitigation
 
 **Root cause**: After many `compact` operations in a long session, model attention to the CLAUDE.md rule erodes. Once one turn skips the reply tool successfully (no immediate consequence visible to the model), subsequent turns follow the pattern.
 
-**Mitigation** (not a fix): restart the daemon every ~24 hours. The simplest cron approach is to schedule a "midnight kill + relaunch" Task. Out of scope for the deploy skill itself.
+**Mitigation — preferred: in-process session rotation.** Install the
+rotation monitor ([`session-rotation.md`](./session-rotation.md),
+[`platforms/linux.md`](../platforms/linux.md) Step 12): once the
+transcript passes a threshold it archives a summary into the deployment's
+memory files and `/clear`s inside the live process, bounding memory
+growth and attention drift without restarting the process. A nightly
+restart is **no longer recommended** — on subscription-authenticated
+deployments every restart re-fetches the remote organization policy and
+a refused fetch (403, `oauth_org_not_allowed`) silences the bot until a
+human re-logs in (see [`troubleshooting.md`](./troubleshooting.md),
+"subscription access disabled after restart"). Restart remains only the
+fallback for deployments where rotation is not installed. Note this also
+interacts with §8: `/clear` cannot be triggered from Telegram, so the
+monitor must drive it through `tmux send-keys`.
 
 **Long-term fix** (not implemented): a watchdog that monitors the bot's `getUpdates` for high-latency / dropped acks and force-restarts. The Mac skill's self-heal logic could be extended to detect this case.
 

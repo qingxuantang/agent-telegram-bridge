@@ -11,7 +11,7 @@ Production-deployed across **four servers** (HK / SG / JP) from 2026-04-07 to 20
 - `--plugin-dir` vs `--channels` mutual exclusion
 - Channel permission relay (Step 4b)
 - Self-edit guard via PermissionRequest hook (Step 7c, commit `1273e2e` substring-match upgrade)
-- Long-session attention drift (no fix, only mitigation via daily restart)
+- Long-session attention drift (mitigation: in-process session rotation — see Step 12; the daily restart is retired on subscription-authenticated deployments)
 - `~/.claude/` inbox guard (Step 7c.5)
 
 ## What changed in this version vs the pre-refactor `skills/deploy-telegram/SKILL.md`
@@ -691,6 +691,53 @@ Then ask the human to send a test message from Telegram. Confirm a reply comes b
 
 > Full pairing details in [`../references/pairing-and-access.md`](../references/pairing-and-access.md).
 
+## Step 12 — 🤖 Install the session-rotation monitor (recommended)
+
+The nightly daemon restart used to be the long-session drift mitigation.
+On subscription-authenticated deployments it is now **retired**: every
+process restart re-fetches the remote organization policy, and a refused
+fetch (403, `oauth_org_not_allowed`) silences the bot until a human
+re-logs in. In-process session rotation keeps the same process alive and
+rotates the conversation inside it instead. Full rationale in
+[`../references/session-rotation.md`](../references/session-rotation.md).
+
+```bash
+$SSH_CMD bash -s << 'EOF'
+set -e
+
+# 1. If a daily restart timer / cron was installed by an earlier deploy,
+#    disable it — it is the thing rotation replaces.
+systemctl --user disable --now claude-telegram-daily-restart.timer 2>/dev/null || true
+crontab -l 2>/dev/null | grep -v 'claude-telegram-daily-restart\|pkill.*claude' | crontab - 2>/dev/null || true
+
+# 2. Install the monitor (copy from the skill's scripts/ directory).
+mkdir -p ~/bin
+cp <repo>/skills/deploy-telegram/scripts/linux/rotate-session.py ~/bin/rotate-session.py
+chmod 700 ~/bin/rotate-session.py
+python3 -m py_compile ~/bin/rotate-session.py
+
+# 3. Measure first: run --check-only a few times over several days and
+#    read the size/token numbers it logs. Set the thresholds in the
+#    script header from real data (defaults 50 MB / 150M tokens are
+#    starting points measured on a busy deployment, not tuned values).
+~/bin/rotate-session.py --check-only
+
+# 4. Schedule the monitor every 15 minutes.
+(crontab -l 2>/dev/null; echo '*/15 * * * * flock -n /tmp/claude-rotate.lock /usr/bin/python3 ~/bin/rotate-session.py >> $HOME/claude-session-rotation.log 2>&1') | crontab -
+
+# 5. Test the full sequence once at a low threshold (or --force), then
+#    confirm: summary file written, /clear executed, no 403 banner,
+#    hello answered, Telegram still replying.
+~/bin/rotate-session.py --force
+echo "OK: rotation monitor installed; check \$HOME/claude-session-rotation.log"
+EOF
+```
+
+> The watchdog (systemd `Restart=on-failure` in Step 7) stays as a safety
+> net — it only fires when the process is actually gone. Rotation handles
+> the healthy-but-grown session; the watchdog handles the dead process.
+> The two are complementary, not alternatives.
+
 ## File manifest
 
 | Path | Purpose | Perms |
@@ -707,6 +754,8 @@ Then ask the human to send a test message from Telegram. Confirm a reply comes b
 | `~/.config/systemd/user/tg-inbox-mover.service` | mover service | 644 |
 | `~/CLAUDE.md` + `~/.claude/CLAUDE.md` | Both rule blocks installed | 644 |
 | `~/telegram-inbox/` | Safe destination for uploads | 755 |
+| `~/bin/rotate-session.py` | Session-rotation monitor (Step 12) | 700 |
+| `~/claude-session-rotation.log` | Rotation monitor log (Step 12) | 644 |
 
 ## Compatibility
 

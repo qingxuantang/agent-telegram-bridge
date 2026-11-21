@@ -114,13 +114,14 @@ The execution steps in each `platforms/<os>.md` reference these documents for **
 | [`references/pairing-and-access.md`](./references/pairing-and-access.md) | `/telegram:access pair <code>` + `policy allowlist` flow, access.json structure, re-pairing |
 | [`references/process-supervisors.md`](./references/process-supervisors.md) | systemd vs launchd vs Task Scheduler comparison, why macOS needs a wrapper script, why Linux gets `RemainAfterExit=yes`, why Windows uses Scheduled Task instead of Service |
 | [`references/post-deploy-hardening.md`](./references/post-deploy-hardening.md) | The production incidents that shaped this skill: trust dialog persistence, AskUserQuestion deadlock, native binary auto-update breakage, Desktop App bot contention, settings overwrite clobbering user state, UserPromptSubmit bypass on channel messages, long-session drift, slash-commands-over-Telegram architectural limit |
+| [`references/session-rotation.md`](./references/session-rotation.md) | In-process session rotation: why the nightly process restart is retired on subscription-authenticated deployments (it re-triggers an organization-policy 403), and how the monitor archives a summary and `/clear`s inside the live process instead |
 | [`references/troubleshooting.md`](./references/troubleshooting.md) | Cross-platform decision tree for diagnosing "phone sends a message, no reply" and other common symptoms |
 
 ## Operating notes (universal)
 
 - **Slash commands over Telegram do NOT work.** This is a hard architectural limit of the channel plugin: Claude Code's CLI parser only intercepts commands typed directly into the terminal, not channel-injected. See [`references/post-deploy-hardening.md`](./references/post-deploy-hardening.md) §8.
 - **One bot, one daemon, one machine.** Don't try to share a bot token across servers (409). If you want Telegram on multiple Claude Code deployments, create one bot per deployment.
-- **Long-session drift mitigation**: schedule a nightly daemon restart. The model's attention to CLAUDE.md rules can erode after many `compact` operations. See [`references/post-deploy-hardening.md`](./references/post-deploy-hardening.md) §7.
+- **Long-session drift mitigation**: install in-process session rotation — the monitor archives a summary and `/clear`s inside the live process once the transcript passes a threshold. The model's attention to CLAUDE.md rules can erode after many `compact` operations. See [`references/session-rotation.md`](./references/session-rotation.md) and [`references/post-deploy-hardening.md`](./references/post-deploy-hardening.md) §7. A nightly daemon restart is only the fallback for deployments where rotation is not installed — and never on subscription-authenticated deployments, where every restart re-fetches the organization policy and can silence the bot (see [`references/troubleshooting.md`](./references/troubleshooting.md), "subscription access disabled after restart").
 - **Plugin upgrades require re-applying the server.ts patch** (Step 4b/5b). The `.bak` copy is preserved on first run; you can verify by checking for `// 'claude/channel/permission'` in the patched file.
 
 ## Compatibility
