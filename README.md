@@ -1,4 +1,4 @@
-# Claude Code Telegram Deploy
+# Agent Telegram Bridge
 
 <p align="center">
   <a href="#english">English</a> | <a href="#中文">中文</a>
@@ -10,15 +10,26 @@
 
 ## English
 
-Open-source skills for deploying Claude Code on remote servers with Telegram integration, and for migrating a full OpenClaw agent (Soul, Memory, Skills, workspace identity) over to Claude Code.
+Open-source skills for deploying agentic coding CLIs on remote servers with
+Telegram integration — and for migrating a full OpenClaw agent over to
+Claude Code.
 
-> **Background**: As of April 5, 2026, Anthropic blocked OpenClaw from using Claude Pro/Max subscriptions. These skills provide a first-party alternative using Claude Code's native Channels feature.
+> **Background**: As of April 5, 2026, Anthropic blocked OpenClaw from using
+> Claude Pro/Max subscriptions. This repository started as a first-party
+> alternative using Claude Code's native Channels feature, and now covers a
+> second agent framework — OpenAI Codex CLI — under the same Telegram-bridge
+> idea. The repo is now **Agent Telegram Bridge**: one home for
+> Telegram deployment skills across agent frameworks, with more frameworks
+> addable in the same shape later.
 
 ### Skills
 
-#### 🚀 [deploy-telegram](skills/deploy-telegram/SKILL.md) — **multi-platform: Linux + macOS + Windows**
+#### 🚀 [deploy-telegram](skills/deploy-telegram/SKILL.md) — Claude Code — **multi-platform: Linux + macOS + Windows**
 
-Deploy a Claude Code daemon that listens for messages over Telegram and replies through the same channel. The daemon runs as a separate process from any local interactive Claude Code (e.g. your Desktop app), sharing `~/.claude/skills/` and `~/CLAUDE.md` so personality is consistent.
+Deploy a Claude Code daemon that listens for messages over Telegram and
+replies through the same channel. The daemon runs as a separate process from
+any local interactive Claude Code (e.g. your Desktop app), sharing
+`~/.claude/skills/` and `~/CLAUDE.md` so personality is consistent.
 
 Structured as a **thin core + platform overlays + shared references**:
 
@@ -55,30 +66,113 @@ skills/deploy-telegram/
 - **macOS**: requires `--scope local` plugin install to avoid Desktop App contending for the bot token (verified incident)
 - **Windows**: reuses the bundled `claude.exe` from `%APPDATA%\Claude\claude-code\<version>\` — no separate npm install needed; PowerShell hooks (no Python dependency); no tmux automation (operator dismisses first-launch dialogs at the keyboard)
 
+For the full Claude story — key learnings, the Telegram Channel reply-tool
+rule, and the architecture diagram — see
+[skills/deploy-telegram/SKILL.md](skills/deploy-telegram/SKILL.md) and its
+`references/` (in particular `architecture-and-design.md`,
+`post-deploy-hardening.md`, and `troubleshooting.md`).
+
+#### 🤖 [deploy-codex-telegram](skills/deploy-codex-telegram/SKILL.md) — Codex CLI — **multi-platform: Linux + macOS + Windows + Docker**
+
+Deploy a Codex CLI agent that listens for messages over Telegram and replies
+through the same channel.
+
+**Architecture in one sentence:** Codex has no `--channels` flag and no
+official Telegram plugin, so a small Python bridge daemon (stdlib only) owns
+the Telegram side and drives Codex from the outside — the exact inverse of
+the Claude architecture, where the CLI owns Telegram. The bridge long-polls
+`getUpdates`, enforces a one-user allowlist, maps each chat to a Codex
+thread, runs `codex exec [--json]` / `codex exec resume`, and delivers the
+reply itself — which also removes, by construction, the Claude design's
+worst failure (replies generated but never delivered because the model
+forgot to call the reply tool). Full detail:
+[skills/deploy-codex-telegram/references/architecture-and-design.md](skills/deploy-codex-telegram/references/architecture-and-design.md).
+
+```
+skills/deploy-codex-telegram/
+├── SKILL.md                              # Core: contract, architecture, do-not, platform router
+├── platforms/
+│   ├── linux.md                          # systemd --user + daily 04:00 restart timer
+│   ├── macos.md                          # launchd + wrapper scripts
+│   ├── windows.md                        # Task Scheduler + Windows bridge fork
+│   └── docker.md                         # codex-tg container; read-only trading mounts
+├── references/
+│   ├── architecture-and-design.md        # bridge-outside-codex; why no 1:1 replacement; app-server outlook
+│   ├── bridge-config.md                  # config.json fields; bridge.env / codex.env (0600); Windows diffs
+│   ├── agents-md-merge.md                # CLAUDE.md → AGENTS.md merge rules; 32 KiB cap
+│   ├── sandbox-and-approval.md           # danger-full-access decision; --approve-for-me conflicts
+│   ├── thread-rotation.md                # 1 MB / 5M-token rotation; palace archive flow
+│   ├── process-supervisors.md            # systemd vs launchd vs Task Scheduler vs docker restart
+│   ├── post-deploy-hardening.md          # 8 production incidents + their permanent fixes
+│   └── troubleshooting.md                # cross-platform decision tree
+└── scripts/
+    ├── systemd/                          # tg-codex-bridge.py, config example, systemd units, migrate script
+    ├── launchd/                          # macOS plists + wrapper scripts
+    ├── windows/                          # Windows bridge fork, task-creation + restart scripts
+    └── docker/                           # codex-tg container build/run scripts
+```
+
+**Validation status**: 9 machines deployed and verified end-to-end —
+Linux servers (systemd, including root-run hosts), Docker containers on
+trading hosts (read-only data mounts, trading processes untouched), macOS
+(launchd), and Windows 11 (Task Scheduler). Codex 0.169.0 on the Linux/macOS
+hosts, 0.170.0 on Windows and in the containers. Bridge version
+`v0.2.0-rotation` (Python stdlib only); per-turn watchdog 1800 s; rotation
+at 1 MB session file / 5M cumulative input tokens; default model
+`gpt-6.1-sol`.
+
+**Common requirements** (universal across platforms):
+- Telegram bot token from `@BotFather /newbot` — **must be a fresh bot per
+  machine** (never reuse the Claude bot's token — two pollers cause 409
+  Conflict)
+- Network access to `api.telegram.org`, `github.com`,
+  `api.openai.com` / `chatgpt.com`, `registry.npmjs.org` (mainland-China
+  networks blocked)
+- Codex authentication per machine: service-account API key (recommended
+  for unattended servers — one key per machine, with a spend cap and
+  alerts) or `codex login --device-auth`
+- Existing Claude Code identity on the machine (for the `CLAUDE.md` →
+  `AGENTS.md` merge; see
+  [skills/deploy-codex-telegram/references/agents-md-merge.md](skills/deploy-codex-telegram/references/agents-md-merge.md))
+
+**Quick start — 5 steps** (full procedure in
+[skills/deploy-codex-telegram/SKILL.md](skills/deploy-codex-telegram/SKILL.md)):
+
+1. Install Codex on the target machine and authenticate it (API key or
+   device login — done by the operator, never by a script).
+2. Verify by hand: `codex exec --json` one turn, `codex exec resume` the
+   thread back, `codex app-server --help` (existence check only).
+3. Migrate the identity: run the migrate script dry-run first, read the
+   report, then `--apply` (copies skills and merges `CLAUDE.md` →
+   `~/.codex/AGENTS.md`; Claude is untouched and keeps running).
+4. Configure the bridge: fresh BotFather bot token into
+   `~/.codex/tg/bridge.env` (0600), copy the config example to
+   `~/.codex/tg/config.json`, set the allowlist to exactly one user id,
+   then `python3 tg-codex-bridge.py --dry-run --config
+   ~/.codex/tg/config.json`.
+5. Install the platform supervisor unit (systemd / launchd / Task Scheduler
+   / Docker) and message the bot — the bridge answers from the new thread.
+
+**Why there is no Codex `deploy.sh`:** the Codex deployment has too many
+steps and too much platform divergence (flag sets differ by Codex version,
+supervisors differ per OS, sandbox behaviour differs between bare metal and
+containers) for a single script to be honest. The skill is the source of
+truth; the per-platform guides and scripts under
+`skills/deploy-codex-telegram/` are the executable form.
+
 #### 🔄 [migrate-openclaw](skills/migrate-openclaw/SKILL.md)
 
-Migrate a complete OpenClaw agent to Claude Code — not just files, but the full identity, memory, and deployment.
-
-**What it does:**
-- Inventories the real OpenClaw structure (`workspace/SOUL.md`, `AGENTS.md`, `IDENTITY.md`, `TOOLS.md`, `MEMORY.md`, `memory/`, `skills/`, `agents/{name}/agent/agent.yaml`, `openclaw.json`)
-- Merges `SOUL.md` + `AGENTS.md` + `IDENTITY.md` + `TOOLS.md` into a single `CLAUDE.md`
-- Auto-appends a **mandatory Telegram Channel reply-tool rule** to `CLAUDE.md` (fixes a real production bug — see Key Learnings)
-- Parses `MEMORY.md` into Claude Code's typed memory files (`user` / `feedback` / `project` / `reference`)
-- Archives daily memory logs for manual review
-- Copies all global and workspace-local skills (format is identical)
-- Extracts environment variables from `openclaw.json` for `settings.json`
-- Extracts and converts the model ID from `agent.yaml` (strips the `anthropic/` provider prefix)
-- Provides per-plugin migration guidance (telegram → deploy-telegram skill, duckduckgo → built-in WebSearch, etc.)
-- Supports multi-agent setups (`workspace-{name}/` via the `AGENT_NAME` parameter)
-- **Physically deploys** the migrated files into `~/.claude/` (not just a staging dir)
-- Optionally creates `start-claude.sh` and launches it in tmux with the Telegram channel attached
-- Never stops OpenClaw — designed for dual-track (OpenClaw + Claude Code running in parallel)
-
-**Each step is tagged with an automation policy:** 🤖 AUTO / 🟡 AUTO-FIRST / 👤 MANUAL / 🚫 DO NOT — so agents know exactly what to execute and what to hand back to the user.
+Migrate a complete OpenClaw agent to Claude Code — not just files, but the
+full identity, memory, and deployment. See
+[skills/migrate-openclaw/SKILL.md](skills/migrate-openclaw/SKILL.md) for the
+full description (inventory, `CLAUDE.md` merge, typed memory parsing, skill
+copy, per-plugin guidance, dual-track deployment, automation-policy tags
+🤖 AUTO / 🟡 AUTO-FIRST / 👤 MANUAL / 🚫 DO NOT).
 
 ### Design: Agent-First
 
-These skills are designed to be **executed by AI agents**, not read by humans. Any agent (Claude Code, OpenClaw, Codex) can:
+These skills are designed to be **executed by AI agents**, not read by
+humans. Any agent (Claude Code, OpenClaw, Codex) can:
 
 1. Read the SKILL.md file
 2. Collect the required inputs from the user
@@ -99,10 +193,20 @@ The skills use deterministic shell commands — no judgment calls required.
 cp -r skills/deploy-telegram .claude/skills/
 ```
 
+#### For Codex users
+
+```
+# Option 1: Reference directly
+"Use the skill at /path/to/skills/deploy-codex-telegram/SKILL.md to deploy Codex on my server"
+
+# Option 2: Copy to project
+cp -r skills/deploy-codex-telegram .codex/skills/
+```
+
 #### For humans (manual deployment)
 
 <details>
-<summary>Click to expand manual steps</summary>
+<summary>Click to expand manual steps (Claude)</summary>
 
 1. Create a Telegram bot via @BotFather → get bot token
 2. Run `claude setup-token` on a machine with a browser → get OAuth token
@@ -113,73 +217,34 @@ cp -r skills/deploy-telegram .claude/skills/
 
 </details>
 
-### Key Learnings
+<details>
+<summary>Click to expand manual steps (Codex)</summary>
 
-Hard-won discoveries from real deployments:
+1. Create a Telegram bot via @BotFather → get a fresh bot token (one per machine)
+2. Install Codex on the target machine; authenticate with an API key or `codex login --device-auth`
+3. Run the migrate script dry-run, then `--apply`
+4. Copy the bridge config example to `~/.codex/tg/config.json`, put the token in `~/.codex/tg/bridge.env` (0600), set the allowlist to your own user id
+5. Dry-run the bridge, then install the supervisor unit for your platform
+6. Message your bot on Telegram
 
-| Pitfall | Symptom | Fix |
-|---------|---------|-----|
-| Missing `channelsEnabled: true` | Messages silently dropped, debug log shows "Channel notifications skipped" | Add to `~/.claude/settings.json` |
-| Using `--plugin-dir` with `--channels` | "skipped...from inline" in debug log | Never combine these flags |
-| Zombie bun/claude processes | Telegram 409 Conflict error | Kill all processes before restart |
-| `setup-token` on headless server | "Raw mode is not supported" error | Run on machine with browser, copy token to server |
-| Wrong env var name | Auth fails silently | Use `CLAUDE_CODE_OAUTH_TOKEN` (not `CLAUDE_CODE_USE_CLAUDE_AI_TOKEN`) |
-| Mainland China servers | All network checks fail | Use servers in HK, SG, JP, US, EU |
-| Plugin installed but disabled | Plugin shows `✘ disabled` in `claude plugin list` | `claude plugin enable telegram@claude-plugins-official` |
-| Reusing OpenClaw's bot token for Claude Code | Telegram 409 Conflict (two polls) | Always create a **new** bot from @BotFather |
-| Missing `--channels` flag in startup script | Bun MCP server never spawns | Add `--channels plugin:telegram@claude-plugins-official` |
-| **Claude replies in terminal but user gets nothing** | tmux pane shows the reply, Telegram does not | Claude forgot to call `plugin:telegram:telegram - reply` MCP tool. Add the Telegram Channel reply-tool rule to `CLAUDE.md` and restart the session |
-| Migrate-openclaw v1: files staged but not deployed | User sees staging dir but Claude Code sees nothing | Skill now has an explicit Step 9 that copies into `~/.claude/` |
-| NVM not on PATH in non-interactive shells | `claude: command not found` in startup script | Source NVM in `~/.bashrc` and in `start-claude.sh` |
-| **Telegram spams Allow/Deny permission cards on every tool call** | Edit/Write/Bash from Telegram triggers a `🔐 Permission: <tool>` card even with `--dangerously-skip-permissions` and a full `permissions.allow` list | Plugin `server.ts` declares `'claude/channel/permission': {}` as an opt-in capability. Claude Code relays channel-session permission prompts to Telegram **independently** of terminal bypass flags. Comment out that single line and restart. Skill auto-patches this as Step 10b. |
-| **Claude silently stops responding mid-session** | tmux pane shows an "allow Claude to edit its own settings" dialog; Telegram gets no reply | Hard-coded safety prompt fires whenever Claude edits any file under `~/.claude/` (e.g. tweaking a skill's own source). Not covered by `--dangerously-skip-permissions`, no settings switch. Recover by sending `Down` then `Enter` via `tmux send-keys` to pick option 2 — unblocks the session until next restart. |
-| **Local Claude Code keeps prompting for permission even with `permissions.allow` full-wildcard** | Edit/Write still pops a permission card despite `permissions.allow: ["Bash(*)","Edit(*)",…]` and `skipDangerousModePermissionPrompt: true` | Those two keys only control the *judgment* after a check is triggered, not the check itself. Add `permissions.defaultMode: "bypassPermissions"` to `~/.claude/settings.json` — equivalent to launching with `--dangerously-skip-permissions` every time. Six modes exist (`default`/`acceptEdits`/`plan`/`auto`/`dontAsk`/`bypassPermissions`); only the last truly silences prompts. Self-edit guard on `~/.claude/` files still cannot be bypassed. |
-| **Telegram user uploads a file → Claude session silently freezes** | Telegram user sends an image/PDF/xlsx, Claude tries to `cp`/`Read` it from `~/.claude/channels/telegram/inbox/`, tmux pane freezes on "Claude requested permissions to edit … which is a sensitive file", Telegram gets nothing for minutes | Hard-coded sensitive-file guard fires on **any** path under `~/.claude/`, independent of all bypass flags including `defaultMode: bypassPermissions`. Fix architecturally: install a `systemd --user` path-unit that moves new files out of `~/.claude/channels/telegram/inbox/` to `~/telegram-inbox/` the instant they land (inotify, millisecond latency). Then update CLAUDE.md to instruct Claude to look at `~/telegram-inbox/` instead. The `deploy-telegram` skill automates this as Step 7b; the `migrate-openclaw` skill bakes the CLAUDE.md rule in. Recovery for an already-stuck session: `tmux send-keys -t claude Down Enter` to pick "always allow access to inbox/". |
-| **Slash commands sent over Telegram are NOT recognized by Claude Code** | User sends `/model opus`, `/clear`, `/compact`, `/cost`, `/help` etc. from Telegram. Instead of switching models / clearing context / compacting, Claude either replies "I can't change my own model" or processes the literal string as a user prompt | Claude Code's slash-command parser only intercepts input typed **directly into the local terminal**. Messages arriving via the Telegram channel plugin are **injected into the prompt stream**, bypassing the CLI parser entirely. The model receives the literal string `/model opus` as a user message and has no way to act on it. **There is no in-band remote way to trigger CLI-level operations** (model switch, context clear, compact, cost, etc.) over Telegram. To change model: SSH into the server, edit `~/start-claude.sh` to add `--model <name>` (or set `env.ANTHROPIC_MODEL` in `~/.claude/settings.json`), then `tmux kill-session -t claude && tmux new-session -d -s claude ~/start-claude.sh`. To clear context remotely: same restart procedure (a fresh session has empty context). |
+</details>
 
-### The Telegram Channel Reply-Tool Rule
+### Safety and redaction
 
-If you have a `CLAUDE.md` on a server running Claude Code with the Telegram channel, append this rule. It prevents a silent failure mode where Claude generates a reply but never actually sends it back to the user.
-
-```markdown
-## Telegram Channel 强制规则（最高优先级 / Highest Priority）
-
-When a message arrives via the Telegram channel (you see `← telegram · <user_id>:` in your input), you **MUST** reply by calling the `plugin:telegram:telegram - reply` MCP tool. Terminal text output is **NOT** delivered to the user — only explicit tool calls are.
-
-Rules:
-1. Every Telegram user message must be followed by at least one `plugin:telegram:telegram - reply` tool call.
-2. Do not assume follow-up replies in the same session send automatically. Each new message needs its own explicit reply call.
-3. Markdown written to the terminal is invisible to the user unless passed through the reply tool.
-4. The task is not complete until the reply tool has been called successfully.
-```
-
-The `migrate-openclaw` skill appends this automatically when generating `CLAUDE.md`.
-
-### Architecture
-
-```
-┌──────────────┐
-│  Telegram    │
-│  (Phone)     │
-└──────┬───────┘
-       │ Bot API long-polling
-       v
-┌──────────────┐
-│  bun         │  MCP server (child process of claude)
-│  server.ts   │  Token: ~/.claude/channels/telegram/.env
-└──────┬───────┘
-       │ stdio (MCP protocol)
-       v
-┌──────────────┐
-│  claude      │  CLI in tmux, managed by systemd
-│  --channels  │  channelsEnabled: true in settings.json
-└──────┬───────┘
-       │ filesystem, git, bash, tools
-       v
-┌──────────────┐
-│  Server      │
-└──────────────┘
-```
+- **This repository contains no real credentials.** Every token, key,
+  password, user id, IP address, hostname, bot name, personal name, email,
+  and domain in this repo is a placeholder (e.g. `PASTE_TOKEN_HERE`,
+  `YOUR_TELEGRAM_USER_ID`, `1234567890` as an example id). Never commit a
+  real secret; the packaging checklist is in [PACKAGING-NOTES.md](PACKAGING-NOTES.md).
+- **Dual-track by default.** Deploying Codex never stops, deletes, or
+  reconfigures Claude Code on the same machine. Rollback is stopping the
+  Codex bridge and going back to the Claude group.
+- **Never touch** running trading processes, production websites, or
+  protected data mounts. Live trading data is mounted read-only wherever a
+  container is involved.
+- The bridge is a remote shell: the allowlist (one operator user id) is the
+  only gate. Do not make the bot public; do not add it to unrelated groups.
+- Bridge logs contain message text and stay on the machine.
 
 ---
 
@@ -187,15 +252,24 @@ The `migrate-openclaw` skill appends this automatically when generating `CLAUDE.
 
 ## 中文
 
-开源技能集：在远程服务器上部署 Claude Code 并通过 Telegram 进行远程访问，以及把一整个 OpenClaw agent（Soul、Memory、Skills、workspace 身份）完整迁移到 Claude Code。
+开源技能集：在远程服务器上部署 agentic 编程 CLI 并通过 Telegram 远程访问，
+以及把一整个 OpenClaw agent（Soul、Memory、Skills、workspace 身份）完整迁移
+到 Claude Code。
 
-> **背景**：2026 年 4 月 5 日起，Anthropic 封禁了 OpenClaw 使用 Claude Pro/Max 订阅。本项目提供基于 Claude Code 原生 Channels 功能的第一方替代方案。
+> **背景**：2026 年 4 月 5 日起，Anthropic 封禁了 OpenClaw 使用 Claude Pro/Max
+> 订阅。本仓库最初是基于 Claude Code 原生 Channels 功能的第一方替代方案，
+> 现在覆盖了第二个 agent 框架——OpenAI Codex CLI，沿用同一套 Telegram 桥接思路。
+> 本仓库现为 **Agent Telegram Bridge**：多个 agent 框架的 Telegram 部署技能的
+> 统一存放处，未来可按同样结构加入更多框架。
 
 ### 技能列表
 
-#### 🚀 [deploy-telegram](skills/deploy-telegram/SKILL.md) — **多平台：Linux + macOS + Windows**
+#### 🚀 [deploy-telegram](skills/deploy-telegram/SKILL.md) — Claude Code — **多平台：Linux + macOS + Windows**
 
-部署一个 Claude Code daemon 进程，监听 Telegram 入站消息并通过同样的 channel 回复。Daemon 作为**独立进程**跟你本地交互用的 Claude Code（比如桌面版）**并行**运行，共享 `~/.claude/skills/` 和 `~/CLAUDE.md`，所以人格 / 技能一致，但 context 隔离、互不打扰。
+部署一个 Claude Code daemon 进程，监听 Telegram 入站消息并通过同样的 channel
+回复。Daemon 作为**独立进程**跟你本地交互用的 Claude Code（比如桌面版）
+**并行**运行，共享 `~/.claude/skills/` 和 `~/CLAUDE.md`，所以人格 / 技能一致，
+但 context 隔离、互不打扰。
 
 结构是**薄核心 + 平台 overlay + 共享 references**：
 
@@ -232,26 +306,89 @@ skills/deploy-telegram/
 - **macOS**：必须用 `--scope local` 装插件以避免 Desktop App 抢 bot token（生产事故已验证）
 - **Windows**：复用 Desktop app 自带的 `claude.exe`（路径 `%APPDATA%\Claude\claude-code\<version>\`），不需要单独装 CLI；PowerShell hooks（不依赖 Python）；不做 tmux 仿真——首次对话框由 operator 在键盘前手动按掉
 
-#### 🔄 [migrate-openclaw](skills/migrate-openclaw/SKILL.md) — 迁移 OpenClaw
+Claude 部分的完整内容——踩坑经验、Telegram Channel 回复工具规则、架构图——见
+[skills/deploy-telegram/SKILL.md](skills/deploy-telegram/SKILL.md) 及其
+`references/`（重点是 `architecture-and-design.md`、`post-deploy-hardening.md`、
+`troubleshooting.md`）。
 
-把一整个 OpenClaw agent 完整迁移到 Claude Code —— 不只是文件转换，还包括身份、记忆、部署全流程。
+#### 🤖 [deploy-codex-telegram](skills/deploy-codex-telegram/SKILL.md) — Codex CLI — **多平台：Linux + macOS + Windows + Docker**
 
-**功能：**
-- 清点真实的 OpenClaw 目录结构（`workspace/SOUL.md`、`AGENTS.md`、`IDENTITY.md`、`TOOLS.md`、`MEMORY.md`、`memory/`、`skills/`、`agents/{name}/agent/agent.yaml`、`openclaw.json`）
-- 把 `SOUL.md` + `AGENTS.md` + `IDENTITY.md` + `TOOLS.md` 合并成单个 `CLAUDE.md`
-- 在 `CLAUDE.md` 末尾**自动追加 Telegram Channel 回复工具强制规则**（修复真实踩过的坑，见踩坑经验）
-- 把 `MEMORY.md` 解析成 Claude Code 的 typed memory 文件（`user` / `feedback` / `project` / `reference` 四类）
-- 把每日记忆日志归档到 `archive/` 供手动 review
-- 复制所有全局和 workspace 级别的 skills（格式完全相同）
-- 从 `openclaw.json` 提取环境变量供 `settings.json` 使用
-- 从 `agent.yaml` 提取并转换模型 ID（自动去掉 `anthropic/` 前缀）
-- 对每个插件给出迁移建议（telegram → deploy-telegram skill；duckduckgo → 内置 WebSearch 等）
-- 支持多 agent 场景（通过 `AGENT_NAME` 参数迁移 `workspace-{name}/`）
-- **实际把迁移产物部署到 `~/.claude/`**，不只是生成 staging 目录
-- 可选地生成 `start-claude.sh` 并用 tmux 启动，自动挂上 Telegram channel
-- 绝不停 OpenClaw —— 设计为双轨运行（OpenClaw 和 Claude Code 并行）
+部署一个 Codex CLI agent，监听 Telegram 入站消息并通过同样的 channel 回复。
 
-**每个步骤都有自动化策略标签：** 🤖 AUTO / 🟡 AUTO-FIRST / 👤 MANUAL / 🚫 DO NOT，让 agent 明确知道哪些自动执行、哪些交给用户。
+**架构一句话：** Codex 没有 `--channels` 参数、没有官方 Telegram 插件，所以由一个
+Python 小桥接 daemon（只用标准库）拥有 Telegram 侧、在外面驱动 Codex——与 Claude
+架构正好相反（Claude 是 CLI 拥有 Telegram）。桥接长轮询 `getUpdates`、执行单用户
+allowlist、把每个 chat 映射到一个 Codex thread、跑 `codex exec [--json]` /
+`codex exec resume`，并自己确定性地投递回复——这也按构造消除了 Claude 设计最严重
+的故障（模型生成了回复却忘了调 reply 工具，用户收不到）。完整说明见
+[skills/deploy-codex-telegram/references/architecture-and-design.md](skills/deploy-codex-telegram/references/architecture-and-design.md)。
+
+```
+skills/deploy-codex-telegram/
+├── SKILL.md                              # 核心：契约、架构、do-not、平台路由
+├── platforms/
+│   ├── linux.md                          # systemd --user + 每日 04:00 重启 timer
+│   ├── macos.md                          # launchd + wrapper 脚本
+│   ├── windows.md                        # Task Scheduler + Windows 版桥接
+│   └── docker.md                         # codex-tg 容器；实盘数据只读挂载
+├── references/
+│   ├── architecture-and-design.md        # 桥在外驱动 Codex；为何不能 1:1 平替；app-server 展望
+│   ├── bridge-config.md                  # config.json 字段；bridge.env / codex.env（0600）；Windows 差异
+│   ├── agents-md-merge.md                # CLAUDE.md → AGENTS.md 合并规则；32 KiB 上限
+│   ├── sandbox-and-approval.md           # danger-full-access 决策；--approve-for-me 冲突
+│   ├── thread-rotation.md                # 1 MB / 5M token 轮换；归档进宫殿流程
+│   ├── process-supervisors.md            # systemd vs launchd vs Task Scheduler vs docker restart
+│   ├── post-deploy-hardening.md          # 8 个生产事故 + 永久修复
+│   └── troubleshooting.md                # 跨平台诊断决策树
+└── scripts/
+    ├── systemd/                          # tg-codex-bridge.py、配置模板、systemd 单元、迁移脚本
+    ├── launchd/                          # macOS plist + wrapper 脚本
+    ├── windows/                          # Windows 版桥接、任务创建与重启脚本
+    └── docker/                           # codex-tg 容器构建/运行脚本
+```
+
+**验证状态**：9 台机器部署完成并经实测——Linux 服务器（systemd，含 root 运行主机）、
+实盘主机上的 Docker 容器（数据只读挂载、实盘进程未动）、macOS（launchd）、Windows 11
+（Task Scheduler）。Codex 0.169.0（Linux/macOS 主机）、0.170.0（Windows 与容器）。
+桥版本 `v0.2.0-rotation`（Python 只用标准库）；单轮 watchdog 1800 秒；1 MB 会话文件 /
+5M 累计输入 token 轮换；默认模型 `gpt-6.1-sol`。
+
+**通用前置条件**（三平台共用）：
+- `@BotFather /newbot` 创建的**全新** Telegram bot token——**每台机器一个**（绝不复用
+  Claude 的 bot token，否则两个 poller 抢 `getUpdates` 会出 409 冲突）
+- 能访问 `api.telegram.org`、`github.com`、`api.openai.com` / `chatgpt.com`、
+  `registry.npmjs.org`（大陆网络过不了）
+- 每台机器单独的 Codex 认证：service-account API key（无人值守服务器推荐——每台一个
+  key、设消费上限 + 告警）或 `codex login --device-auth`
+- 目标机器上已有 Claude Code 身份（供 `CLAUDE.md` → `AGENTS.md` 合并；见
+  [skills/deploy-codex-telegram/references/agents-md-merge.md](skills/deploy-codex-telegram/references/agents-md-merge.md)）
+
+**快速上手 5 步**（完整流程见
+[skills/deploy-codex-telegram/SKILL.md](skills/deploy-codex-telegram/SKILL.md)）：
+
+1. 在目标机器上安装 Codex 并认证（API key 或 device 登录——由操作人做，脚本不做）。
+2. 手工验证三步：`codex exec --json` 跑一轮、`codex exec resume` 续回该 thread、
+   `codex app-server --help`（只确认命令存在）。
+3. 迁移身份：先跑迁移脚本 dry-run 看报告，再 `--apply`（复制 skills、合并
+   `CLAUDE.md` → `~/.codex/AGENTS.md`；Claude 原样不动、继续运行）。
+4. 配桥接：全新 BotFather bot token 写进 `~/.codex/tg/bridge.env`（0600），配置模板拷成
+   `~/.codex/tg/config.json`，allowlist 只放一个用户 id，然后
+   `python3 tg-codex-bridge.py --dry-run --config ~/.codex/tg/config.json`。
+5. 按平台装 supervisor 单元（systemd / launchd / Task Scheduler / Docker），给 bot
+   发消息——桥接从新 thread 回复。
+
+**为什么没有 Codex 版 `deploy.sh`：** Codex 部署步骤多、平台差异大（Codex 版本不同 flag
+集不同、各 OS 的 supervisor 不同、裸机与容器的沙箱行为不同），一个脚本装不下还容易
+误导。Skill 是唯一事实来源；`skills/deploy-codex-telegram/` 下的分平台指南与脚本是
+可执行形态。
+
+#### 🔄 [migrate-openclaw](skills/migrate-openclaw/SKILL.md)
+
+把一整个 OpenClaw agent 完整迁移到 Claude Code —— 不只是文件转换，还包括身份、
+记忆、部署全流程。完整说明见
+[skills/migrate-openclaw/SKILL.md](skills/migrate-openclaw/SKILL.md)（清点、CLAUDE.md
+合并、typed memory 解析、skill 复制、逐插件迁移建议、双轨部署、自动化策略标签
+🤖 AUTO / 🟡 AUTO-FIRST / 👤 MANUAL / 🚫 DO NOT）。
 
 ### 设计理念：Agent-First（代理优先）
 
@@ -276,10 +413,20 @@ skills/deploy-telegram/
 cp -r skills/deploy-telegram .claude/skills/
 ```
 
+#### Codex 用户
+
+```
+# 方式一：直接引用
+"使用 /path/to/skills/deploy-codex-telegram/SKILL.md 这个 skill 在我的服务器上部署 Codex"
+
+# 方式二：复制到项目
+cp -r skills/deploy-codex-telegram .codex/skills/
+```
+
 #### 手动部署
 
 <details>
-<summary>点击展开手动步骤</summary>
+<summary>点击展开手动步骤（Claude）</summary>
 
 1. 通过 @BotFather 创建 Telegram Bot → 获取 Bot Token
 2. 在有浏览器的机器上运行 `claude setup-token` → 获取 OAuth Token
@@ -290,73 +437,29 @@ cp -r skills/deploy-telegram .claude/skills/
 
 </details>
 
-### 踩坑经验
+<details>
+<summary>点击展开手动步骤（Codex）</summary>
 
-真实部署中的血泪教训：
+1. 通过 @BotFather 创建 Telegram Bot → 获取全新 bot token（每台机器一个）
+2. 在目标机器上安装 Codex；用 API key 或 `codex login --device-auth` 认证
+3. 先跑迁移脚本 dry-run，再 `--apply`
+4. 把桥接配置模板拷成 `~/.codex/tg/config.json`，token 写进 `~/.codex/tg/bridge.env`（0600），allowlist 只放自己的用户 id
+5. 先 dry-run 桥接，再按平台装 supervisor 单元
+6. 在 Telegram 上给你的 Bot 发消息
 
-| 坑 | 症状 | 解决方案 |
-|----|------|----------|
-| 缺少 `channelsEnabled: true` | 消息静默丢弃，调试日志显示 "Channel notifications skipped" | 添加到 `~/.claude/settings.json` |
-| `--plugin-dir` 与 `--channels` 同时使用 | 调试日志中出现 "skipped...from inline" | 永远不要同时使用这两个标志 |
-| 僵尸 bun/claude 进程 | Telegram 409 Conflict 错误 | 重启前先杀掉所有相关进程 |
-| 在无头服务器上运行 `setup-token` | "Raw mode is not supported" 错误 | 在有浏览器的机器上运行，将 Token 复制到服务器 |
-| 环境变量名错误 | 认证静默失败 | 使用 `CLAUDE_CODE_OAUTH_TOKEN`（不是 `CLAUDE_CODE_USE_CLAUDE_AI_TOKEN`） |
-| 中国大陆服务器 | 所有网络检查失败 | 使用港、新、日、美、欧等地区的服务器 |
-| 插件安装后状态为 disabled | `claude plugin list` 显示 `✘ disabled` | `claude plugin enable telegram@claude-plugins-official` |
-| Claude Code 复用了 OpenClaw 的 bot token | Telegram 409 Conflict（两端抢 long-polling） | 一定要用 @BotFather 新建一个 bot |
-| 启动脚本漏了 `--channels` 参数 | Bun MCP 服务器根本不会启动 | 加上 `--channels plugin:telegram@claude-plugins-official` |
-| **Claude 在终端里写了回复，但用户没收到** | tmux 里能看到回复文本，Telegram 没收到 | Claude 忘了调 `plugin:telegram:telegram - reply` MCP 工具。把 Telegram Channel 回复工具规则写进 `CLAUDE.md` 并重启 session |
-| v1 的 migrate-openclaw：文件只 staging 没部署 | 用户能看到 staging 目录，但 Claude Code 读不到任何东西 | 新版 Skill 增加了 Step 9，显式把文件复制到 `~/.claude/` |
-| 非交互式 shell 里 NVM 不在 PATH | 启动脚本里 `claude: command not found` | 在 `~/.bashrc` 和 `start-claude.sh` 里 source NVM |
-| **Telegram 每次调用工具都弹 Allow/Deny 权限卡片** | 即便 `--dangerously-skip-permissions` + `permissions.allow` 全开，Telegram 端一触发 Edit/Write/Bash 还是弹 `🔐 Permission: <tool>` | 插件 `server.ts` 里声明了 opt-in 能力 `'claude/channel/permission': {}`，Claude Code 会**独立于**终端 bypass 标志，把 channel 会话的权限请求转发到 Telegram。把那一行注释掉并重启即可。Skill 的 Step 10b 会自动打这个补丁。 |
-| **Claude 跑着跑着突然不回复** | tmux pane 卡在 "allow Claude to edit its own settings" 对话框，Telegram 收不到任何回复 | 只要 Claude 要编辑 `~/.claude/` 目录下的文件（比如改 skill 自己的源码），就会触发这个硬编码的安全确认。`--dangerously-skip-permissions` 绕不过去，settings.json 也没开关。恢复方式：通过 `tmux send-keys` 发送 `Down` + `Enter` 选第 2 项，可以让本 session 剩余时间内都不再弹（重启后会再来）。 |
-| **本地 Claude Code 即便 `permissions.allow` 全通配也仍弹权限卡片** | `permissions.allow: ["Bash(*)","Edit(*)",…]` + `skipDangerousModePermissionPrompt: true` 都加了，Edit/Write 还是弹卡 | 这两个 key 只控制"检查触发后的判定"，并不抑制检查本身。在 `~/.claude/settings.json` 里加 `permissions.defaultMode: "bypassPermissions"` 才是真正等价于每次都用 `--dangerously-skip-permissions` 启动。Schema 里六种 mode（`default`/`acceptEdits`/`plan`/`auto`/`dontAsk`/`bypassPermissions`），只有最后一个真正静默所有提示。但 `~/.claude/` 自编辑保护仍无法绕过。 |
-| **Telegram 用户上传文件 → Claude session 静默卡死** | 用户从 Telegram 发图片/PDF/xlsx，Claude 想从 `~/.claude/channels/telegram/inbox/` 把文件 `cp`/`Read` 出来，tmux pane 卡在 "Claude requested permissions to edit … which is a sensitive file"，Telegram 几分钟没回复 | `~/.claude/` 下的 sensitive-file 硬编码保护对**任何**路径生效，所有 bypass 标志都没用，包括 `defaultMode: bypassPermissions`。**架构级解决方案**：装一个 `systemd --user` 的 path-unit 监听 `~/.claude/channels/telegram/inbox/`，新文件落盘瞬间（inotify，毫秒级）就 `mv` 到 `~/telegram-inbox/`，然后改 CLAUDE.md 让 Claude 只看 `~/telegram-inbox/`。`deploy-telegram` skill 的 Step 7b 自动部署这个；`migrate-openclaw` skill 生成的 CLAUDE.md 自带这条规则。**已经卡住的 session**：`tmux send-keys -t claude Down Enter` 选 "always allow access to inbox/" 解开。 |
-| **通过 Telegram 发斜杠命令无法被 Claude Code 正确识别** | 从 Telegram 发 `/model opus`、`/clear`、`/compact`、`/cost`、`/help` 等斜杠命令，**不会**切换模型/清上下文/压缩——Claude 要么回一句"我没法切换自己的模型"，要么把字面字符串当成普通 prompt 处理 | Claude Code 的斜杠命令解析器**只**拦截**直接在终端**键入的输入。Telegram channel plugin 发来的消息是**注入到 prompt 流里**的，**完全绕过了 CLI 解析器**。模型收到的是字面字符串 `/model opus`，自己没有能力切换自己。**结论：所有 CLI 级操作（切模型、清上下文、压缩、查费用等）无法通过 Telegram 远程触发。** 要切模型必须 SSH 到服务器，改 `~/start-claude.sh` 加 `--model <名称>`（或在 `~/.claude/settings.json` 的 `env` 段加 `ANTHROPIC_MODEL`），然后 `tmux kill-session -t claude && tmux new-session -d -s claude ~/start-claude.sh` 重启。要远程清上下文：同样要重启 session（新 session 上下文为空）。 |
+</details>
 
-### Telegram Channel 回复工具规则
+### 安全与脱敏声明
 
-如果你的服务器上运行着带 Telegram channel 的 Claude Code 且有 `CLAUDE.md`，务必把下面这条规则加进去。它防止一种静默失败：Claude 生成了回复，但从来没真正发回给用户。
-
-```markdown
-## Telegram Channel 强制规则（最高优先级）
-
-当消息来源是 Telegram channel（输入中看到 `← telegram · <user_id>:` 标记时），你**必须**通过调用 `plugin:telegram:telegram - reply` MCP 工具来回复用户，**不能**只在终端输出文本。终端里写的任何内容，用户在 Telegram 端**完全看不到**。
-
-规则：
-1. 每一条来自 Telegram 的用户消息，都必须对应**至少一次** `plugin:telegram:telegram - reply` 工具调用
-2. 不要假设同一 session 里后续回复会自动发出 —— 每一条新消息都要重新显式调用 reply 工具
-3. 终端里的 markdown / 代码块 / 解释，如果不通过 reply 工具发出，用户就收不到
-4. 回复工具调用成功前，不算任务完成
-```
-
-`migrate-openclaw` skill 在生成 `CLAUDE.md` 时会自动追加这条规则。
-
-### 架构图
-
-```
-┌──────────────┐
-│  Telegram    │
-│  (手机)      │
-└──────┬───────┘
-       │ Bot API 长轮询
-       v
-┌──────────────┐
-│  bun         │  MCP 服务器（claude 的子进程）
-│  server.ts   │  Token 位置：~/.claude/channels/telegram/.env
-└──────┬───────┘
-       │ stdio（MCP 协议）
-       v
-┌──────────────┐
-│  claude      │  在 tmux 中运行的 CLI，由 systemd 管理
-│  --channels  │  settings.json 中需要 channelsEnabled: true
-└──────┬───────┘
-       │ 文件系统、git、bash、工具
-       v
-┌──────────────┐
-│  服务器       │
-└──────────────┘
-```
+- **本仓库不含任何真实凭证。** 仓库里所有 token、key、密码、用户 id、IP、主机名、bot
+  名、人名、邮箱、域名均为占位符（如 `PASTE_TOKEN_HERE`、`YOUR_TELEGRAM_USER_ID`、示例
+  id `1234567890`）。绝不要提交真实 secret；打包检查清单见
+  [PACKAGING-NOTES.md](PACKAGING-NOTES.md)。
+- **默认双轨。** 部署 Codex 不会停掉、删除或改动同一台机器上的 Claude Code。回滚就是
+  停掉 Codex 桥接、回 Claude 的群。
+- **绝不碰**运行中的交易进程、生产网站、受保护的数据挂载。容器场景下实盘数据一律只读挂载。
+- 桥接就是远程 shell：allowlist（一个操作人用户 id）是唯一门。不要把 bot 设公开、不要加进无关群。
+- 桥接日志含消息原文，只存本机，不外发。
 
 ---
 

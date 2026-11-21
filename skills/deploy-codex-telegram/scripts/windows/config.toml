@@ -1,0 +1,8 @@
+# SPDX-License-Identifier: MIT
+# Windows Codex config (template; adjust the date note to your host)
+# danger-full-access: the Telegram bridge runs codex exec non-interactively,
+# and `codex exec resume` accepts no --approve-for-me/--sandbox flag, so
+# without this, resume turns fall back to read-only. Mirrors the Linux servers and macOS hosts (sandbox-off option, chosen
+# 2026-11-16). Reversible by deleting
+# this line.
+sandbox_mode = "danger-full-access"

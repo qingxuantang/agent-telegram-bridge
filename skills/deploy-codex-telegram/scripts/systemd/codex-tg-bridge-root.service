@@ -1,0 +1,56 @@
+# SPDX-License-Identifier: MIT
+# codex-tg-bridge-root.service — SYSTEM unit for the Codex Telegram bridge.
+#
+# Difference vs the --user unit (codex-tg-bridge.service):
+#   - This is a systemd SYSTEM unit (installed in /etc/systemd/system)
+#     that runs as root; the --user unit runs as the agent user via
+#     `systemctl --user` and needs `loginctl enable-linger`.
+#   - No linger is needed for a system unit.
+#   - systemd's default PATH for system units has no nvm/node: the
+#     Environment=PATH line below must explicitly include the node bin
+#     dir (adjust the version to the node installed on this host), and
+#     codex_bin in config.json should be the full path to the codex binary.
+#   - %h below is the home of User=root. If the bridge should run
+#     as a different user, change User= and %h resolves accordingly.
+#
+# Install (via sudo):
+#   cp codex-tg-bridge-root.service /etc/systemd/system/codex-tg-bridge.service
+#   cp codex-tg-daily-restart.service codex-tg-daily-restart.timer /etc/systemd/system/
+#   systemctl daemon-reload
+#   systemctl enable --now codex-tg-bridge.service
+#   systemctl enable --now codex-tg-daily-restart.timer
+#
+# Token: TELEGRAM_BOT_TOKEN=YOUR_BOT_TOKEN in %h/.codex/tg/bridge.env (0600).
+# Do NOT put the token in this unit file, and do NOT reuse Claude's token.
+# Codex API key: CODEX_API_KEY=YOUR_CODEX_API_KEY in %h/.codex/tg/codex.env (0600).
+# The bridge inherits both, and its `codex exec` children inherit them
+# from the bridge — no key material in this unit file.
+# Config: %h/.codex/tg/config.json (codex_bin is the full path to the codex
+# binary because root's systemd PATH has no nvm/node).
+# NOTE (2026-11-16): the full codex_bin path alone is NOT enough — codex
+# is a node script (#!/usr/bin/env node), so the unit must also put the
+# nvm node bin dir on PATH, or every `codex exec` under the service fails
+# with "/usr/bin/env: 'node': No such file or directory". Fixed by the
+# Environment=PATH line below; verified by the bridge log showing the
+# real "codex=codex-cli 0.169.0" at startup.
+# Logs: journalctl -u codex-tg-bridge.service -f + %h/.codex/tg/bridge.log
+[Unit]
+Description=Codex Telegram bridge (pilot, codex exec)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+ExecStart=/usr/bin/python3 %h/codex-tg/scripts/tg-codex-bridge.py --config %h/.codex/tg/config.json
+EnvironmentFile=%h/.codex/tg/bridge.env
+EnvironmentFile=%h/.codex/tg/codex.env
+Environment=PATH=%h/.nvm/versions/node/v22.22.0/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+WorkingDirectory=%h
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

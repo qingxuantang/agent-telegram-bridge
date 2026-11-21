@@ -1,0 +1,21 @@
+{
+  "_license": "MIT",
+  "_comment": "allowed_user_ids: 1234567890 is a placeholder \u2014 replace it with your own Telegram user id. bot_token: replace PASTE_TOKEN_HERE with a new BotFather token (or leave it and set TELEGRAM_BOT_TOKEN in bridge.env). codex_timeout_s=1800 and the rotation_* values are the deployed values; they match the bridge defaults.",
+  "bot_token": "PASTE_TOKEN_HERE",
+  "allowed_user_ids": [
+    1234567890
+  ],
+  "allowed_chat_ids": [],
+  "codex_bin": "codex",
+  "workdir": "~",
+  "inbox_dir": "~/telegram-inbox",
+  "state_file": "~/.codex/tg/state.json",
+  "log_file": "~/.codex/tg/bridge.log",
+  "lock_file": "~/.codex/tg/bridge.lock",
+  "codex_timeout_s": 1800,
+  "sandbox": "workspace-write",
+  "approve_for_me": true,
+  "poll_timeout_s": 30,
+  "rotation_session_max_bytes": 1000000,
+  "rotation_cumulative_input_max": 5000000
+}

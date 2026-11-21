@@ -1,0 +1,43 @@
+# SPDX-License-Identifier: MIT
+# codex-tg-bridge.service — systemd --user unit for the Codex Telegram bridge.
+#
+# Install (on the server, as the agent user — NOT root unless the agent runs as root):
+#   mkdir -p ~/.config/systemd/user
+#   cp codex-tg-bridge.service ~/.config/systemd/user/
+#   cp codex-tg-daily-restart.service codex-tg-daily-restart.timer ~/.config/systemd/user/
+#   loginctl enable-linger "$USER"        # required: keep --user services alive after logout
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now codex-tg-bridge.service
+#   systemctl --user enable --now codex-tg-daily-restart.timer
+#
+# Token: put TELEGRAM_BOT_TOKEN=YOUR_BOT_TOKEN in ~/.codex/tg/bridge.env
+# (0600). Do NOT put the token in this unit file, and do NOT reuse Claude's token.
+# Codex API key: put CODEX_API_KEY=YOUR_CODEX_API_KEY in
+# ~/.codex/tg/codex.env (0600). The bridge inherits it, and its `codex exec`
+# children inherit it from the bridge — no key material in this unit file.
+# Config: ~/.codex/tg/config.json (copy of tg-codex-bridge.config.json.example).
+# Logs: journalctl --user -u codex-tg-bridge.service -f
+#       + ~/.codex/tg/bridge.log
+#
+# Mirrors the companion Claude daemon pattern (claude-telegram.service,
+# Type=simple + Restart=always). The bridge needs no
+# tmux/PTY — it is a plain long-poll daemon, so Type=simple is correct here.
+[Unit]
+Description=Codex Telegram bridge (pilot, codex exec)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 %h/codex-tg/scripts/tg-codex-bridge.py --config %h/.codex/tg/config.json
+EnvironmentFile=%h/.codex/tg/bridge.env
+EnvironmentFile=%h/.codex/tg/codex.env
+WorkingDirectory=%h
+Restart=always
+RestartSec=10
+# Keep logs in the journal as well as the bridge's own log file.
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target

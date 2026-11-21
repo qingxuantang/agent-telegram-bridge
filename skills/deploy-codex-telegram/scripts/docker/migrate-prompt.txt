@@ -1,0 +1,16 @@
+# SPDX-License-Identifier: MIT
+# Template — replace <host> and the note list below before use.
+You are migrating the memory palace on <host> from a flat layout to the memory-palace skill winged format. The palace is shared with this host's Claude via a bind-mount. Do NOT touch any live trading process, the claude-tg container, or any file outside the palace.
+
+PALACE_ROOT is /home/codex/.codex/projects/-workspace/memory/.
+
+Step 1 — init: Use the memory-palace skill at /home/codex/.codex/skills/memory-palace/ and run its /mp init. Create the skeleton: .palace-config.yaml, user.md, project.md, reference.md, feedback.md, timeline.md, wings/, audits/. Do NOT delete or overwrite any existing file. The existing flat files (MEMORY.md plus the flat notes) must stay untouched for now.
+
+Step 2 — migrate the flat notes: Use the skill's /mp migrate-from on these files only (NOT MEMORY.md — it is just an index, skip it):
+- <note-1>.md
+- <note-2>.md
+- <note-3>.md
+(TODO: replace with the actual flat note filenames on this host.)
+Run the dry-run first, review the routing table, and if the wing/room/hall routing looks reasonable, proceed with apply. This turn is non-interactive and you are pre-authorized to apply after reviewing the dry-run. Do NOT create any new wing without a clear reason; prefer the canonical wings (projects, infrastructure, knowledge, personal, people). Never write secrets into the palace. Do NOT delete any source file.
+
+Step 3 — report: Print a concise summary: which L1 files were created, which wings/rooms were created, how many memory units were imported from each note, and the path of any migration log. If any note fails to route, say which one and why.

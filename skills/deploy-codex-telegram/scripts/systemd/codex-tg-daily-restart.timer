@@ -1,0 +1,14 @@
+# SPDX-License-Identifier: MIT
+# codex-tg-daily-restart.timer — daily 04:00 restart of the bridge.
+# Mirrors the companion pattern (claude-telegram-daily-restart.timer, 04:00).
+# Persistent=true so a missed run (host down at 04:00) fires on next boot.
+[Unit]
+Description=Daily 04:00 restart of the Codex Telegram bridge
+
+[Timer]
+OnCalendar=*-*-* 04:00:00
+Persistent=true
+Unit=codex-tg-daily-restart.service
+
+[Install]
+WantedBy=timers.target

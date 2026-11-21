@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- SPDX-License-Identifier: MIT -->
+<!-- Template: replace YOUR_USERNAME with your macOS username in the paths below. -->
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.codex.telegram-bridge-restart</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/bash</string>
+    <string>/Users/YOUR_USERNAME/codex-tg/scripts/restart-bridge.sh</string>
+  </array>
+  <key>StartCalendarInterval</key>
+  <dict>
+    <key>Hour</key>
+    <integer>4</integer>
+    <key>Minute</key>
+    <integer>0</integer>
+  </dict>
+  <key>WorkingDirectory</key>
+  <string>/Users/YOUR_USERNAME</string>
+  <key>StandardOutPath</key>
+  <string>/Users/YOUR_USERNAME/.codex/tg/bridge-restart.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/YOUR_USERNAME/.codex/tg/bridge-restart.log</string>
+</dict>
+</plist>

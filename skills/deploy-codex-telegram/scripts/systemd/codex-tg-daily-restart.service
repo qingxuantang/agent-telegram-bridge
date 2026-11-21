@@ -1,0 +1,12 @@
+# SPDX-License-Identifier: MIT
+# codex-tg-daily-restart.service — oneshot that restarts the bridge.
+# Triggered by codex-tg-daily-restart.timer (04:00 daily, mirroring the
+# companion claude-telegram-daily-restart pattern — a long-running 40-day/
+# 85 MB session OOM-kill is exactly what this prevents).
+# Install alongside the .timer; see codex-tg-bridge.service header.
+[Unit]
+Description=Daily restart of the Codex Telegram bridge
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/systemctl --user restart codex-tg-bridge.service
