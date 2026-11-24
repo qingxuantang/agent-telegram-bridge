@@ -28,11 +28,17 @@ Merge rules:
     paths may still point at Claude locations and may need a Codex pass).
   * Output must stay under Codex's 32 KiB AGENTS.md cap (32768 bytes).
   * Backs up the existing output file before overwriting.
+  * Preserves any <!-- BEGIN: ... --> ... <!-- END: ... --> block found in
+    the existing output file that the rebuild does not regenerate (e.g. a
+    supplement block appended to the output by hand during palace wiring):
+    it is re-inserted after the same anchor line it followed before, or
+    appended at the end with a note if that anchor is gone.
   * Never touches either source file or anything under ~/.claude/.
 """
 import argparse
 import hashlib
 import os
+import re
 import sys
 
 CAP = 32768
@@ -86,6 +92,56 @@ def non_block_remainder(text):
     return rest.strip()
 
 
+BLOCK_RE = re.compile(r"<!-- BEGIN:.*?-->(?:.*?)<!-- END:.*?-->",
+                      re.DOTALL)
+
+
+def find_marked_blocks(text):
+    """Find all <!-- BEGIN: ... --> ... <!-- END: ... --> blocks.
+
+    Returns a list of dicts: begin (the opening marker line), block (the
+    full matched text), start/end (char offsets), anchor (the last
+    non-empty line before the block, or None if the block is first).
+    """
+    blocks = []
+    for m in BLOCK_RE.finditer(text):
+        begin = re.match(r"<!-- BEGIN:.*?-->", m.group(0)).group(0)
+        before = text[:m.start()]
+        lines = [ln for ln in before.split("\n") if ln.strip()]
+        blocks.append({
+            "begin": begin,
+            "block": m.group(0),
+            "start": m.start(),
+            "end": m.end(),
+            "anchor": lines[-1] if lines else None,
+        })
+    return blocks
+
+
+def reinsert_preserved_blocks(merged, preserved):
+    """Re-insert blocks the rebuild did not regenerate.
+
+    Each block goes back after the same anchor line it followed in the
+    old output; if the anchor is gone, the block is appended at the end.
+    Blocks are processed in reverse old-file order so earlier insertions
+    cannot shift a later anchor. Returns (merged, notes).
+    """
+    notes = []
+    for b in sorted(preserved, key=lambda x: x["start"], reverse=True):
+        block = b["block"].strip("\n")
+        anchor = b["anchor"]
+        if anchor and anchor in merged:
+            idx = merged.rfind(anchor) + len(anchor)
+            merged = merged[:idx] + "\n\n" + block + merged[idx:]
+            notes.append(f"preserved block re-inserted after anchor: "
+                         f"{b['begin']}")
+        else:
+            merged = merged.rstrip() + "\n\n" + block + "\n"
+            notes.append(f"NOTE: anchor not found for preserved block "
+                         f"{b['begin']}; appended at end.")
+    return merged, notes
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--apply", action="store_true",
@@ -128,6 +184,21 @@ def main():
               "reference Claude\n"
               "     locations and may need a Codex pass. Sources untouched. -->\n\n")
     merged = header + body.rstrip() + "\n" + extra
+
+    # Preserve blocks the rebuild does not regenerate (e.g. a supplement
+    # appended to the output by hand): any BEGIN/END block in the existing
+    # output whose opening marker is absent from the rebuilt text.
+    preserved = []
+    if os.path.exists(args.out):
+        old = open(args.out, encoding="utf-8").read()
+        for b in find_marked_blocks(old):
+            if b["begin"] not in merged:
+                preserved.append(b)
+    if preserved:
+        merged, notes = reinsert_preserved_blocks(merged, preserved)
+        for n in notes:
+            print(n)
+
     size = len(merged.encode("utf-8"))
 
     print(f"home:   {args.home} ({len(home.encode())} bytes, md5 {home_md5})")
