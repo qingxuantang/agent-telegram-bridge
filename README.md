@@ -246,13 +246,6 @@ cp -r skills/deploy-codex-telegram .codex/skills/
   only gate. Do not make the bot public; do not add it to unrelated groups.
 - Bridge logs contain message text and stay on the machine.
 
-### Proposals
-
-Design proposals awaiting an owner decision live under
-[`docs/proposals/`](docs/proposals/):
-
-- [Telegram file upload (outbound attachments)](docs/proposals/PROPOSAL_telegram-file-upload-2026-11-24.md) — let the Codex bridge send files the server produced back to the operator in Telegram (`[SEND_FILE: <path>]` marker + `/send <path>` command), with path confinement and a credential-file denylist.
-
 ---
 
 <a id="中文"></a>
@@ -467,12 +460,6 @@ cp -r skills/deploy-codex-telegram .codex/skills/
 - **绝不碰**运行中的交易进程、生产网站、受保护的数据挂载。容器场景下实盘数据一律只读挂载。
 - 桥接就是远程 shell：allowlist（一个操作人用户 id）是唯一门。不要把 bot 设公开、不要加进无关群。
 - 桥接日志含消息原文，只存本机，不外发。
-
-### 提案
-
-待拍板的设计提案放在 [`docs/proposals/`](docs/proposals/)：
-
-- [Telegram 文件上传（出站附件）](docs/proposals/PROPOSAL_telegram-file-upload-2026-11-24.md)——让 Codex 桥接把服务器上产出的文件直接发回给 Telegram 里的操作人（`[SEND_FILE: <path>]` 标记 + `/send <path>` 命令），带路径 confinement 与凭证文件黑名单。
 
 ---
 
