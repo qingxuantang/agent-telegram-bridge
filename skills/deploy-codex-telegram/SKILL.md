@@ -71,6 +71,15 @@ Claude; it is a second, parallel track.
   with 🔄. If archiving fails, **do not rotate** — retry next round.
   `/new` discards the thread **without** archiving. `/status` shows thread
   size, token counts, and thresholds.
+- **Outbound attachments:** the bridge sends files back to Telegram —
+  `[SEND_FILE: <path>]` markers in a Codex reply (max 3 per reply, only
+  when the operator asked for a file — the rule is in the `merge-agents.py`
+  Codex note that lands in `AGENTS.md`) or `/send <path>` without a Codex
+  turn. Sent with `sendDocument` (multipart, 50 MB cap — the Bot API
+  bot-side send limit, unrelated to the receiving account; 20 MB is the
+  inbound `getFile` limit). Only files under the workdir; credential/key
+  files are always refused. See `scripts/tg-codex-bridge.py`
+  (`send_document`, `resolve_sendable_path`, `extract_send_files`).
 - **Flag facts (hard-won, do not guess):**
   - There is **no `--ask-for-approval`** flag. Unattended runs use
     **`--approve-for-me`**.

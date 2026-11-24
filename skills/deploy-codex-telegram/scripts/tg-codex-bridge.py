@@ -16,6 +16,7 @@ Commands implemented by the bridge (never sent to the model):
   /new     forget this chat's thread; next message starts a fresh thread
   /status  thread id, queue depth, running state, codex version, uptime
   /cancel  kill the running codex turn for this chat + drop queued messages
+  /send <path>  send a file from the server as a Telegram document (no Codex turn)
   /help    / /start  usage
 
 Rotation (automatic, no command needed): when the current thread's
@@ -30,7 +31,13 @@ on the next message. /new still discards without archiving.
 
 Attachments: photos/documents are downloaded via getFile to
 ~/telegram-inbox/<chat_id>/<date>_<file_id>_<name> and their path is
-prepended to the prompt, so Codex can read the file.
+prepended to the prompt, so Codex can read the file. Outbound: a Codex
+reply may carry `[SEND_FILE: <path>]` markers (only when the operator
+asked for a file — see the AGENTS.md rule); the bridge uploads each
+marked file as a Telegram document (sendDocument, 50 MB cap) and sends
+the remaining text. `/send <path>` uploads directly without a Codex
+turn. Only files under the workdir may be sent; credential/key files
+are always refused.
 
 State: ~/.codex/tg/state.json  {"offset": int,
   "threads": {"<chat_id>": "<thread_id>"}}  (atomic write via tmp+rename).
@@ -73,6 +80,7 @@ import json
 import logging
 import os
 import queue
+import re
 import signal
 import subprocess
 import sys
@@ -90,6 +98,20 @@ PLACEHOLDER_TOKEN = "PASTE_TOKEN_HERE"
 MAX_TG_MESSAGE = 4096
 POLL_TIMEOUT_S = 30
 CODEX_TIMEOUT_S = 1800
+
+# Outbound attachments (sendDocument): the Telegram Bot API caps a
+# bot-sent document at 50 MB. That cap is on the bot side only — it has
+# nothing to do with the receiving account (a free account can receive
+# far larger files). 20 MB is the getFile *download* limit (inbound),
+# not the send limit. Captions are capped at 1024 characters by the API.
+MAX_SEND_DOCUMENT_BYTES = 50 * 1024 * 1024
+MAX_TG_CAPTION = 1024
+MAX_SEND_FILES_PER_REPLY = 3
+
+# Files the bridge will never send, even inside the workdir: credential
+# and key material. Matched by exact filename or by suffix (case-insensitive).
+SENDABLE_DENY_NAMES = {"bridge.env", "codex.env", "secrets.env", ".env"}
+SENDABLE_DENY_SUFFIXES = {".key", ".pem", ".p12", ".pfx"}
 
 # Rotation: when a thread's session file (or its cumulative input tokens)
 # passes these limits, the bridge archives the thread into the memory
@@ -239,6 +261,46 @@ class Telegram:
         for chunk in chunk_text(text):
             self._call("sendMessage", {"chat_id": chat_id, "text": chunk})
 
+    def send_document(self, chat_id: int, path: Path, caption: str = "") -> None:
+        """Upload a local file as a Telegram document (multipart/form-data).
+
+        The body streams from disk in chunks (see _MultipartBody), so a
+        50 MB file is never held whole in memory. Raises ValueError when
+        the file is missing or over the Bot API 50 MB send limit;
+        RuntimeError on a Telegram/network error.
+        """
+        if not path.is_file():
+            raise ValueError(f"file not found: {path}")
+        size = path.stat().st_size
+        if size > MAX_SEND_DOCUMENT_BYTES:
+            raise ValueError(
+                f"file too large for Telegram sendDocument: {size:,} bytes "
+                f"(limit {MAX_SEND_DOCUMENT_BYTES:,} bytes)")
+        if len(caption) > MAX_TG_CAPTION:
+            caption = caption[:MAX_TG_CAPTION - 13] + " …(truncated)"
+        boundary = f"----tg-bridge-{os.urandom(16).hex()}"
+        fields = {"chat_id": str(chat_id)}
+        if caption:
+            fields["caption"] = caption
+        body = _MultipartBody(boundary, fields, "document", path)
+        url = f"{self.base}/sendDocument"
+        req = urllib.request.Request(
+            url, data=body, method="POST",
+            headers={"Content-Type": f"multipart/form-data; boundary={boundary}",
+                     "Content-Length": str(len(body))})
+        try:
+            with urllib.request.urlopen(req, timeout=120) as r:
+                resp = json.loads(r.read().decode("utf-8"))
+        except urllib.error.HTTPError as e:
+            err = e.read().decode("utf-8", "replace")[:500]
+            raise RuntimeError(f"Telegram sendDocument HTTP {e.code}: {err}") from e
+        except urllib.error.URLError as e:
+            raise RuntimeError(f"Telegram sendDocument network error: {e}") from e
+        finally:
+            body.close()
+        if not resp.get("ok"):
+            raise RuntimeError(f"sendDocument not ok: {resp}")
+
     def get_file_path(self, file_id: str) -> str:
         resp = self._call("getFile", {"file_id": file_id})
         if not resp.get("ok"):
@@ -273,6 +335,131 @@ def chunk_text(text: str, limit: int = MAX_TG_MESSAGE) -> list[str]:
     if cur:
         chunks.append(cur)
     return chunks or ["(empty reply)"]
+
+
+# ---------------------------------------------------------------- outbound attachments
+
+SEND_FILE_RE = re.compile(r"\[SEND_FILE:\s*(?P<path>\"[^\"]+\"|'[^']+'|[^\]\n]+?)\s*\]")
+
+
+def extract_send_files(reply: str) -> tuple[str, list[str]]:
+    """Split `[SEND_FILE: <path>]` markers out of a Codex reply.
+
+    Returns (clean_text, [paths]) — paths in marker order, quotes
+    stripped. Markers may appear several times, on one line or many.
+    clean_text has the markers removed, runs of blank lines collapsed,
+    ends stripped.
+    """
+    paths: list[str] = []
+
+    def _take(m: re.Match) -> str:
+        raw = m.group("path").strip()
+        if len(raw) >= 2 and raw[0] == raw[-1] and raw[0] in "\"'":
+            raw = raw[1:-1]
+        paths.append(raw)
+        return ""
+
+    clean = SEND_FILE_RE.sub(_take, reply)
+    clean = re.sub(r"\n{3,}", "\n\n", clean)
+    # A removed marker can leave a trailing space on its line.
+    clean = "\n".join(line.rstrip() for line in clean.split("\n")).strip()
+    return clean, paths
+
+
+def resolve_sendable_path(raw: str, root: Path) -> Path:
+    """Resolve a user/model-supplied path for outbound sending.
+
+    Returns the real absolute path. Raises ValueError when the path
+    does not exist, escapes the root (``..`` or a symlink pointing
+    outside it), or is credential/key material (never sent, even inside
+    the root). The root is the bridge's workdir. Relative paths are
+    resolved against the root; absolute paths must still land inside it.
+    """
+    root_real = root.resolve()
+    candidate = (Path(raw).resolve() if os.path.isabs(raw)
+                 else (root_real / raw).resolve())
+    if (candidate.name in SENDABLE_DENY_NAMES
+            or candidate.suffix.lower() in SENDABLE_DENY_SUFFIXES):
+        raise ValueError(f"refusing to send credential/key file: {candidate.name}")
+    if not candidate.is_file():
+        raise ValueError(f"file not found: {raw}")
+    if candidate != root_real and root_real not in candidate.parents:
+        raise ValueError(f"path is outside the workdir: {raw}")
+    return candidate
+
+
+class _MultipartBody:
+    """File-like multipart/form-data body that streams the file from disk.
+
+    urllib hands the object to http.client, which reads it in bounded
+    chunks, so a 50 MB file is never held whole in memory. __len__ gives
+    the total size so the caller can set Content-Length up front.
+    """
+
+    def __init__(self, boundary: str, fields: dict[str, str],
+                 file_field: str, path: Path):
+        self._file = open(path, "rb")
+        self._size = path.stat().st_size
+        head = b"".join(
+            b"--" + boundary.encode("ascii") + b"\r\n"
+            + (f'Content-Disposition: form-data; name="{k}"\r\n\r\n'
+               ).encode("utf-8")
+            + v.encode("utf-8") + b"\r\n"
+            for k, v in fields.items())
+        safe_name = (path.name.replace('"', "_").replace("\r", "_")
+                     .replace("\n", "_"))
+        head += (b"--" + boundary.encode("ascii") + b"\r\n"
+                 + (f'Content-Disposition: form-data; name="{file_field}"; '
+                    f'filename="{safe_name}"\r\n').encode("utf-8")
+                 + b"Content-Type: application/octet-stream\r\n\r\n")
+        self._tail = b"\r\n--" + boundary.encode("ascii") + b"--\r\n"
+        self._pieces = self._iter_pieces(head)
+        self._pending = b""
+        self._len = len(head) + self._size + len(self._tail)
+        self._closed = False
+
+    def _iter_pieces(self, head: bytes):
+        yield head
+        try:
+            while True:
+                chunk = self._file.read(65536)
+                if not chunk:
+                    break
+                yield chunk
+        finally:
+            self._file.close()
+        yield self._tail
+
+    def __len__(self) -> int:
+        return self._len
+
+    def read(self, n: int = -1) -> bytes:
+        if self._closed:
+            return b""
+        want = n if n and n > 0 else 65536
+        out = bytearray()
+        while len(out) < want:
+            if self._pending:
+                piece, self._pending = self._pending, b""
+            else:
+                try:
+                    piece = next(self._pieces)
+                except StopIteration:
+                    break
+            if len(out) + len(piece) > want:
+                cut = want - len(out)
+                out += piece[:cut]
+                self._pending = piece[cut:]
+                break
+            out += piece
+        return bytes(out)
+
+    def close(self) -> None:
+        self._closed = True
+        try:
+            self._file.close()
+        except Exception:
+            pass
 
 
 # ---------------------------------------------------------------- codex
@@ -596,6 +783,36 @@ class Bridge:
             final = rotation_note + "\n\n" + final
         return final
 
+    def _deliver_reply(self, chat_id: int, reply: str) -> None:
+        """Send a turn's reply: upload any [SEND_FILE:] attachments first,
+        then the remaining text. A failed file never drops the text reply
+        — the failure is appended to the text as a warning line. At most
+        MAX_SEND_FILES_PER_REPLY files per reply; extras are reported
+        as skipped.
+        """
+        clean, paths = extract_send_files(reply)
+        notes: list[str] = []
+        for raw in paths[:MAX_SEND_FILES_PER_REPLY]:
+            try:
+                path = resolve_sendable_path(raw, self.workdir)
+                self.tg.send_document(chat_id, path, caption=path.name)
+                self.log.info("chat=%s sent file %s (%s bytes)",
+                              chat_id, path.name, path.stat().st_size)
+            except (ValueError, RuntimeError, OSError) as e:
+                self.log.warning("chat=%s send file failed %r: %s",
+                                 chat_id, raw, e)
+                notes.append(f"⚠️ Could not send {Path(raw).name or raw}: {e}")
+        if len(paths) > MAX_SEND_FILES_PER_REPLY:
+            notes.append(
+                f"⚠️ Only the first {MAX_SEND_FILES_PER_REPLY} files were sent; "
+                f"{len(paths) - MAX_SEND_FILES_PER_REPLY} more were skipped.")
+        text = clean
+        if notes:
+            text = (text + "\n\n" + "\n".join(notes)).strip() if text \
+                else "\n".join(notes)
+        if text:
+            self.tg.send_message(chat_id, text)
+
     def _worker(self, chat_id: int) -> None:
         q = self.queues[chat_id]
         while not self.stop.is_set():
@@ -605,7 +822,7 @@ class Bridge:
                 continue
             try:
                 reply = self._run_turn(chat_id, prompt)
-                self.tg.send_message(chat_id, reply)
+                self._deliver_reply(chat_id, reply)
             except Exception as e:  # noqa: BLE001 — a turn must never kill the bridge
                 self.log.exception("chat=%s turn error", chat_id)
                 try:
@@ -648,6 +865,8 @@ class Bridge:
                 "Commands:\n/new — start a fresh thread\n"
                 "/status — thread, queue, codex version\n"
                 "/cancel — kill the running turn + drop queued messages\n"
+                "/send <path> — send a file from the server as a document "
+                "(inside the workdir, max 50 MB)\n"
                 "/help — this text")
             return True
         if cmd == "new":
@@ -690,6 +909,27 @@ class Bridge:
                     except queue.Empty:
                         break
             self.tg.send_message(chat_id, "🛑 Cancelled the running turn and cleared the queue.")
+            return True
+        if cmd == "send":
+            rest = text[len("/send"):].strip()
+            if len(rest) >= 2 and rest[0] == rest[-1] and rest[0] in "\"'":
+                rest = rest[1:-1]
+            if not rest:
+                self.tg.send_message(
+                    chat_id,
+                    "Usage: /send <path> — send a file from the server as a "
+                    "Telegram document (inside the workdir, max 50 MB).")
+                return True
+            try:
+                path = resolve_sendable_path(rest, self.workdir)
+                self.tg.send_document(chat_id, path, caption=path.name)
+                size = path.stat().st_size
+                self.log.info("chat=%s sent file %s (%s bytes) via /send",
+                              chat_id, path.name, size)
+                self.tg.send_message(chat_id, f"📎 Sent {path.name} ({size:,} bytes).")
+            except (ValueError, RuntimeError, OSError) as e:
+                self.log.warning("chat=%s /send failed %r: %s", chat_id, rest, e)
+                self.tg.send_message(chat_id, f"⚠️ Could not send {rest}: {e}")
             return True
         return False  # unknown /command: fall through to Codex as text
 

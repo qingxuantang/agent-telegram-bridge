@@ -46,6 +46,11 @@ CODEX_ROUTING_NOTE = """<!-- BEGIN: channel-routing-rule (Codex adaptation) -->
 - Codex 里没有 Telegram 回复工具，不要尝试调用任何 telegram reply 工具；
   只需输出回复正文，投递由桥接负责。
 - Telegram 发来的斜杠命令只是普通文本，按文本意思处理，不要当作 CLI 命令。
+- 需要发文件时：只有当用户在本轮对话里明确要过文件时，才在回复里写
+  `[SEND_FILE: <path>]` 标记（一次最多 3 个文件，只发任务产物，不要发
+  中间产物）；否则先用文字问用户要不要发，不要直接发。标记由桥接解析
+  后去掉并上传文件，剩余文字照常发回。路径必须在工作区内，凭证文件
+  永远发不出去。
 <!-- END: channel-routing-rule (Codex adaptation) -->"""
 
 
