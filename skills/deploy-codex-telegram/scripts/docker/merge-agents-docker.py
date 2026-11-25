@@ -17,6 +17,8 @@ Output must stay under 32768 bytes and contain ZERO
 `plugin:telegram:telegram` references. Never touches the source.
 """
 import hashlib
+import os
+import re
 import sys
 
 CAP = 32768
@@ -57,6 +59,28 @@ This environment has Memory Palace installed as the only long-term memory system
 <!-- END: memory-palace-override -->"""
 
 
+HEADER_RE = re.compile(r"<!--.*?-->\s*", re.DOTALL)
+
+
+def existing_header(out_path):
+    """Leading comment block of an existing output file, if any.
+
+    Returns the first <!-- ... --> comment (plus following whitespace)
+    verbatim, or None when the file does not exist or does not start
+    with a comment. Lets a hand-edited header survive rebuilds; a
+    future change to the built-in header text does not propagate to
+    existing outputs (accepted: the header is informational).
+    Same rule as merge-agents.py:existing_header.
+    """
+    if not out_path or not os.path.exists(out_path):
+        return None
+    old = open(out_path, encoding="utf-8").read()
+    if not old.startswith("<!--"):
+        return None
+    m = HEADER_RE.match(old)
+    return m.group(0) if m else None
+
+
 def md5(path):
     h = hashlib.md5()
     with open(path, "rb") as f:
@@ -83,12 +107,17 @@ def main():
     assert "memory-palace-override" not in src, "source already has a palace block"
     body = body.rstrip() + "\n\n" + MEMORY_PALACE_BLOCK + "\n"
 
-    header = ("<!-- AGENTS.md — merged for Codex from the "
-              "container's /home/claude/.claude/CLAUDE.md.\n"
-              "     Channel Routing section replaced by the Codex adaptation. "
-              "no-interactive-select and quant-sandbox rules kept verbatim.\n"
-              "     Memory-palace block added (source had none); PALACE_ROOT "
-              "is the shared palace bind-mount. Source untouched. -->\n\n")
+    fixed_header = ("<!-- AGENTS.md — merged for Codex from the "
+                    "container's /home/claude/.claude/CLAUDE.md.\n"
+                    "     Channel Routing section replaced by the Codex adaptation. "
+                    "no-interactive-select and quant-sandbox rules kept verbatim.\n"
+                    "     Memory-palace block added (source had none); PALACE_ROOT "
+                    "is the shared palace bind-mount. Source untouched. -->\n\n")
+    header = existing_header(OUT_MERGED)
+    if header is None:
+        header = fixed_header
+    else:
+        print("header preserved from existing output")
     merged = header + body.rstrip() + "\n"
     msize = len(merged.encode("utf-8"))
     assert msize <= CAP, f"merged over cap: {msize}"

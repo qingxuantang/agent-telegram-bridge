@@ -23,7 +23,12 @@ Merge rules:
     delivery and the model just produces the reply text.
   * The global file's blocks duplicate the home file's fuller versions, so
     they are skipped; any non-block remainder in the global file is appended
-    under its own heading.
+    under its own heading -- unless it is already present in the merged
+    body (e.g. when the two sources are byte-identical), in which case
+    appending it would duplicate the rules verbatim.
+  * The leading comment header of an existing output file is preserved
+    verbatim when present, so a hand-edited header survives rebuilds;
+    a fresh output gets the built-in header below.
   * The memory-palace block is kept verbatim (flagged in the report: its
     paths may still point at Claude locations and may need a Codex pass).
   * Output must stay under Codex's 32 KiB AGENTS.md cap (32768 bytes).
@@ -32,7 +37,10 @@ Merge rules:
     the existing output file that the rebuild does not regenerate (e.g. a
     supplement block appended to the output by hand during palace wiring):
     it is re-inserted after the same anchor line it followed before, or
-    appended at the end with a note if that anchor is gone.
+    appended at the end with a note if that anchor is gone. Exception: a
+    stale 'from global' remainder block is tool-generated, so when the
+    rebuild no longer appends it (dedup) the old copy is dropped, not
+    preserved -- its content is already in the body.
   * Never touches either source file or anything under ~/.claude/.
 """
 import argparse
@@ -94,6 +102,59 @@ def non_block_remainder(text):
 
 BLOCK_RE = re.compile(r"<!-- BEGIN:.*?-->(?:.*?)<!-- END:.*?-->",
                       re.DOTALL)
+
+
+def remainder_already_present(body, remainder):
+    """True when the global remainder adds nothing new.
+
+    Every non-empty line of the remainder already occurs in the merged
+    body -- e.g. when the home and global sources are byte-identical,
+    the remainder is just the home file minus its blocks, which is
+    already in the body. (A whole-text substring check does not work
+    here: the remainder glues the pre- and post-routing spans together,
+    while the body has the Codex routing note between them.)
+    """
+    lines = [ln for ln in remainder.split("\n") if ln.strip()]
+    if not lines:
+        return True
+    body_lines = set(body.split("\n"))
+    return all(ln in body_lines for ln in lines)
+
+
+HEADER_RE = re.compile(r"<!--.*?-->\s*", re.DOTALL)
+
+
+def existing_header(out_path):
+    """Leading comment block of an existing output file, if any.
+
+    Returns the first <!-- ... --> comment (plus following whitespace)
+    verbatim, or None when the file does not exist or does not start
+    with a comment. Lets a hand-edited header survive rebuilds; a
+    future change to the built-in header text does not propagate to
+    existing outputs (accepted: the header is informational).
+    """
+    if not out_path or not os.path.exists(out_path):
+        return None
+    old = open(out_path, encoding="utf-8").read()
+    if not old.startswith("<!--"):
+        return None
+    m = HEADER_RE.match(old)
+    return m.group(0) if m else None
+
+
+def should_preserve_block(begin, merged):
+    """Whether an old-output block should be carried over.
+
+    Blocks the rebuild regenerates (opening marker present in the
+    rebuilt text) are skipped -- and so is a stale 'from global'
+    remainder block: the tool itself generated it, and when the rebuild
+    no longer appends it (dedup: its content is already in the body),
+    the old copy must go instead of being preserved forever. Hand-
+    appended blocks are unaffected.
+    """
+    if begin in merged:
+        return False
+    return not begin.startswith("<!-- BEGIN: from global")
 
 
 def find_marked_blocks(text):
@@ -171,18 +232,26 @@ def main():
 
     remainder = non_block_remainder(glob)
     extra = ""
-    if remainder:
+    if remainder and not remainder_already_present(body, remainder):
         extra = ("\n\n<!-- BEGIN: from global ~/.claude/CLAUDE.md "
                  "(non-block remainder) -->\n" + remainder +
                  "\n<!-- END: from global ~/.claude/CLAUDE.md -->\n")
+    elif remainder:
+        print("global non-block remainder already present in body; "
+              "skipped (dedup)")
 
-    header = ("<!-- AGENTS.md — merged for Codex from ~/CLAUDE.md and "
-              "~/.claude/CLAUDE.md.\n"
-              "     Claude-only channel-routing block replaced by the Codex "
-              "adaptation below.\n"
-              "     Memory-palace block kept verbatim; its paths may still "
-              "reference Claude\n"
-              "     locations and may need a Codex pass. Sources untouched. -->\n\n")
+    fixed_header = ("<!-- AGENTS.md — merged for Codex from ~/CLAUDE.md and "
+                    "~/.claude/CLAUDE.md.\n"
+                    "     Claude-only channel-routing block replaced by the Codex "
+                    "adaptation below.\n"
+                    "     Memory-palace block kept verbatim; its paths may still "
+                    "reference Claude\n"
+                    "     locations and may need a Codex pass. Sources untouched. -->\n\n")
+    header = existing_header(args.out)
+    if header is None:
+        header = fixed_header
+    else:
+        print("header preserved from existing output")
     merged = header + body.rstrip() + "\n" + extra
 
     # Preserve blocks the rebuild does not regenerate (e.g. a supplement
@@ -192,7 +261,7 @@ def main():
     if os.path.exists(args.out):
         old = open(args.out, encoding="utf-8").read()
         for b in find_marked_blocks(old):
-            if b["begin"] not in merged:
+            if should_preserve_block(b["begin"], merged):
                 preserved.append(b)
     if preserved:
         merged, notes = reinsert_preserved_blocks(merged, preserved)
@@ -206,7 +275,7 @@ def main():
     print(f"merged: {size} bytes (cap {CAP}) -> "
           f"{'UNDER CAP' if size <= CAP else 'OVER CAP - ABORT'}")
     print(f"routing block replaced: {routing is not None}")
-    print(f"global non-block remainder appended: {bool(remainder)}")
+    print(f"global non-block remainder appended: {bool(extra)}")
     if size > CAP:
         return 1
 
