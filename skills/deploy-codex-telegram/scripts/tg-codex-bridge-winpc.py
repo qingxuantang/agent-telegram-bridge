@@ -47,7 +47,8 @@ reply may carry `[SEND_FILE: <path>]` markers (only when the operator
 asked for a file — see the AGENTS.md rule); the bridge uploads each
 marked file as a Telegram document (sendDocument, 50 MB cap) and sends
 the remaining text. `/send <path>` uploads directly without a Codex
-turn. Only files under the workdir may be sent; credential/key files
+turn. Only files under the workdir or a configured send root
+(`send_roots` in config.json) may be sent; credential/key files
 are always refused.
 
 State: ~/.codex/tg/state.json  {"offset": int,
@@ -107,7 +108,7 @@ import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 
-VERSION = "0.2.0-rotation"
+VERSION = "0.3.0"
 DEFAULT_USER_ID = 1234567890  # 示例占位符，请替换为你自己的 Telegram user id
 PLACEHOLDER_TOKEN = "PASTE_TOKEN_HERE"
 MAX_TG_MESSAGE = 4096
@@ -144,6 +145,7 @@ CONFIG_TEMPLATE = {
     "allowed_chat_ids": [],
     "codex_bin": "codex",
     "workdir": "~",
+    "send_roots": [],
     "inbox_dir": "~/telegram-inbox",
     "state_file": "~/.codex/tg/state.json",
     "log_file": "~/.codex/tg/bridge.log",
@@ -195,6 +197,14 @@ def load_config(path: Path | None) -> dict:
         if not isinstance(user_cfg, dict):
             raise SystemExit(f"config file must be a JSON object: {path}")
         cfg.update(user_cfg)
+    # send_roots: optional extra sendable directories. Must be a list of
+    # absolute paths; anything else is a startup error, not a silent skip.
+    roots = cfg.get("send_roots") or []
+    if not isinstance(roots, list) or any(not isinstance(p, str) for p in roots):
+        raise SystemExit("config error: send_roots must be a list of absolute paths")
+    for p in roots:
+        if not os.path.isabs(expand(p)):
+            raise SystemExit(f"config error: send_roots entry is not absolute: {p}")
     # Env / bridge.env overrides for the token only (never for allowlists).
     env = dict(os.environ)
     env.update(load_dotenv(expand("~/.codex/tg/bridge.env")))
@@ -381,25 +391,27 @@ def extract_send_files(reply: str) -> tuple[str, list[str]]:
     return clean, paths
 
 
-def resolve_sendable_path(raw: str, root: Path) -> Path:
+def resolve_sendable_path(raw: str, roots: list[Path]) -> Path:
     """Resolve a user/model-supplied path for outbound sending.
 
     Returns the real absolute path. Raises ValueError when the path
-    does not exist, escapes the root (``..`` or a symlink pointing
-    outside it), or is credential/key material (never sent, even inside
-    the root). The root is the bridge's workdir. Relative paths are
-    resolved against the root; absolute paths must still land inside it.
+    does not exist, escapes every root (``..`` or a symlink pointing
+    outside all of them), or is credential/key material (never sent,
+    even inside a root). ``roots[0]`` is the bridge's workdir; the rest
+    are the configured ``send_roots``. Relative paths are resolved
+    against the workdir only; absolute paths must land inside any root.
     """
-    root_real = root.resolve()
+    roots_real = [r.resolve() for r in roots]
+    workdir_real = roots_real[0]
     candidate = (Path(raw).resolve() if os.path.isabs(raw)
-                 else (root_real / raw).resolve())
+                 else (workdir_real / raw).resolve())
     if (candidate.name in SENDABLE_DENY_NAMES
             or candidate.suffix.lower() in SENDABLE_DENY_SUFFIXES):
         raise ValueError(f"refusing to send credential/key file: {candidate.name}")
     if not candidate.is_file():
         raise ValueError(f"file not found: {raw}")
-    if candidate != root_real and root_real not in candidate.parents:
-        raise ValueError(f"path is outside the workdir: {raw}")
+    if not any(candidate == r or r in candidate.parents for r in roots_real):
+        raise ValueError(f"path is outside the sendable roots: {raw}")
     return candidate
 
 
@@ -652,6 +664,8 @@ class Bridge:
         self.log = logging.getLogger("tg-codex-bridge")
         self.started_at = time.time()
         self.workdir = expand(cfg["workdir"])
+        self.send_roots = [expand(p) for p in (cfg.get("send_roots") or [])]
+        self.sendable_roots = [self.workdir, *self.send_roots]
         self.inbox = expand(cfg["inbox_dir"])
         self.queues: dict[int, queue.Queue] = {}
         self.workers: dict[int, threading.Thread] = {}
@@ -811,7 +825,7 @@ class Bridge:
         notes: list[str] = []
         for raw in paths[:MAX_SEND_FILES_PER_REPLY]:
             try:
-                path = resolve_sendable_path(raw, self.workdir)
+                path = resolve_sendable_path(raw, self.sendable_roots)
                 self.tg.send_document(chat_id, path, caption=path.name)
                 self.log.info("chat=%s sent file %s (%s bytes)",
                               chat_id, path.name, path.stat().st_size)
@@ -883,7 +897,7 @@ class Bridge:
                 "/status — thread, queue, codex version\n"
                 "/cancel — kill the running turn + drop queued messages\n"
                 "/send <path> — send a file from the server as a document "
-                "(inside the workdir, max 50 MB)\n"
+                "(inside the workdir or a configured send root, max 50 MB)\n"
                 "/help — this text")
             return True
         if cmd == "new":
@@ -935,10 +949,10 @@ class Bridge:
                 self.tg.send_message(
                     chat_id,
                     "Usage: /send <path> — send a file from the server as a "
-                    "Telegram document (inside the workdir, max 50 MB).")
+                    "Telegram document (inside the workdir or a configured send root, max 50 MB).")
                 return True
             try:
-                path = resolve_sendable_path(rest, self.workdir)
+                path = resolve_sendable_path(rest, self.sendable_roots)
                 self.tg.send_document(chat_id, path, caption=path.name)
                 size = path.stat().st_size
                 self.log.info("chat=%s sent file %s (%s bytes) via /send",
@@ -987,8 +1001,9 @@ class Bridge:
 
     # -- main loop ------------------------------------------------------
     def run(self) -> None:
-        self.log.info("bridge %s starting; codex=%s workdir=%s",
-                      VERSION, self._codex_version(), self.workdir)
+        self.log.info("bridge %s starting; codex=%s workdir=%s send_roots=%s",
+                      VERSION, self._codex_version(), self.workdir,
+                      ", ".join(str(p) for p in self.send_roots) or "(none)")
         offset = int(self.state.data.get("offset") or 0)
         while not self.stop.is_set():
             try:
@@ -1062,6 +1077,7 @@ def main(argv: list[str] | None = None) -> int:
         print("Config OK (dry-run, no Telegram polling, no codex run).")
         print(f"  codex_bin: {cfg['codex_bin']}")
         print(f"  workdir:   {expand(cfg['workdir'])}")
+        print(f"  send_roots: {cfg.get('send_roots') or '(none)'}")
         print(f"  inbox:     {expand(cfg['inbox_dir'])}")
         print(f"  state:     {expand(cfg['state_file'])}")
         print(f"  allowed_user_ids: {cfg['allowed_user_ids']}")

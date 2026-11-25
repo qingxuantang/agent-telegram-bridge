@@ -77,7 +77,11 @@ Claude; it is a second, parallel track.
   Codex note that lands in `AGENTS.md`) or `/send <path>` without a Codex
   turn. Sent with `sendDocument` (multipart, 50 MB cap — the Bot API
   bot-side send limit, unrelated to the receiving account; 20 MB is the
-  inbound `getFile` limit). Only files under the workdir; credential/key
+  inbound `getFile` limit). Only files under the workdir or a configured
+  `send_roots` directory are sendable — `send_roots` is an optional
+  `config.json` list of absolute paths (empty by default, i.e. workdir
+  only); relative paths always resolve against the workdir, and the
+  credential/key denylist applies under every root. Credential/key
   files are always refused. See `scripts/tg-codex-bridge.py`
   (`send_document`, `resolve_sendable_path`, `extract_send_files`).
 - **Flag facts (hard-won, do not guess):**
